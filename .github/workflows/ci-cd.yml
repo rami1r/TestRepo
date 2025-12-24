@@ -1,0 +1,95 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "Reason for manual trigger"
+        required: false
+        default: "Test run"
+        type: string
+  schedule:
+    - cron: "0 0 * * 0"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    name: Continuous Integration
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install fastapi uvicorn
+
+      - name: Run app sanity check
+        run: |
+          python -c "import app; print('App imported successfully')"
+
+      - name: Build Docker image
+        run: docker build -t fastapi-lab-app .
+
+      - name: Test Docker image
+        run: |
+          docker run --rm -d -p 8000:8000 fastapi-lab-app
+          sleep 3
+          curl -f http://localhost:8000/ || (echo "Failed" && exit 1)
+          echo "Docker container runs successfully"
+
+      - name: Generate simple log
+        run: |
+          mkdir -p logs
+          echo "CI Pipeline ran at $(date)" > logs/pipeline.log
+          echo "Docker container tested ✓" >> logs/pipeline.log
+
+      - name: Upload build logs artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: build-logs
+          path: logs/
+          retention-days: 30
+
+  # Deploy Job - Save Docker artifact (lab-safe deployment)
+  deploy:
+    name: Deploy
+    needs: ci
+    runs-on: ubuntu-latest
+
+    # Only deploy on push to main branch
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Download artifact (logs)
+        uses: actions/download-artifact@v7
+        with:
+          name: build-logs
+          path: ./logs
+
+      - name: Upload Docker image artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: docker-image
+          path: .
+          retention-days: 30
